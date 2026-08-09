@@ -1,0 +1,16 @@
+# ── Secrets — NEVER upload these ──────────────────────────
+.env
+
+# ── Dependencies — reinstalled with npm install ───────────
+node_modules/
+
+# ── OS junk ───────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Logs ──────────────────────────────────────────────────
+*.log
+npm-debug.log*
+
+# ── Uploads (temporary local files) ───────────────────────
+uploads/
