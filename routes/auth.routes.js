@@ -5,6 +5,7 @@
 const router  = require('express').Router();
 const multer  = require('multer');
 const { verifyToken } = require('../middleware/auth.middleware');
+const { verifyDocument } = require('../middleware/documentAI.middleware');
 const {
   registerBuyer,
   registerFarmer,
@@ -45,12 +46,7 @@ router.post('/change-password', verifyToken, changePassword);
 
 // Document upload — accepts single file in field named 'file'
 // Also requires docType in the form body
-router.post(
-  '/upload-document',
-  verifyToken,
-  docUpload.single('file'),      // 'file' is the field name from the frontend
-  uploadDocument
-);
+router.post('/upload-document', verifyToken, docUpload.single('file'), verifyDocument, uploadDocument);
 
 // ── Multer error handler ──────────────────────────────────────
 router.use((error, _req, res, _next) => {

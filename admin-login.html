@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FarmDirect Admin — Sign In</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --g-start:#22c55e; --g-mid:#10b981; --g-end:#06b6d4;
+      --gradient:linear-gradient(135deg,var(--g-start),var(--g-mid),var(--g-end));
+      --ink:#0f172a; --body:#1e293b; --subtle:#475569; --muted:#94a3b8;
+      --border:#e2e8f0; --bg:#f8fafc; --surface:#ffffff;
+      --danger:#ef4444; --r-md:12px; --r-lg:16px; --r-xl:24px;
+    }
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    body{
+      font-family:'Inter',sans-serif;
+      background:var(--ink);
+      min-height:100vh;
+      display:flex;align-items:center;justify-content:center;
+      padding:24px;
+      position:relative;overflow:hidden;
+    }
+    /* Animated gradient background */
+    body::before{
+      content:'';position:fixed;inset:0;
+      background:radial-gradient(ellipse at 20% 50%,rgba(34,197,94,0.15) 0%,transparent 60%),
+                 radial-gradient(ellipse at 80% 20%,rgba(6,182,212,0.12) 0%,transparent 55%),
+                 radial-gradient(ellipse at 60% 80%,rgba(16,185,129,0.1) 0%,transparent 50%);
+      pointer-events:none;
+    }
+    body::after{
+      content:'';position:fixed;
+      width:600px;height:600px;border-radius:50%;
+      background:radial-gradient(circle,rgba(16,185,129,0.06) 0%,transparent 70%);
+      top:-200px;right:-200px;pointer-events:none;
+    }
+
+    .login-card{
+      background:rgba(255,255,255,0.04);
+      backdrop-filter:blur(20px);
+      border:1px solid rgba(255,255,255,0.08);
+      border-radius:24px;
+      padding:48px;
+      width:100%;max-width:420px;
+      position:relative;z-index:1;
+      box-shadow:0 24px 80px rgba(0,0,0,0.4);
+    }
+
+    /* Logo */
+    .logo{
+      display:flex;align-items:center;gap:10px;
+      margin-bottom:32px;
+    }
+    .logo-icon{
+      width:44px;height:44px;border-radius:12px;
+      background:var(--gradient);
+      display:flex;align-items:center;justify-content:center;
+      font-size:1.2rem;
+      box-shadow:0 4px 16px rgba(16,185,129,0.4);
+    }
+    .logo-text{
+      font-family:'Plus Jakarta Sans',sans-serif;
+      font-size:1.2rem;font-weight:800;color:#fff;
+      letter-spacing:-0.03em;
+    }
+    .logo-text span{
+      background:var(--gradient);
+      -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+      background-clip:text;
+    }
+
+    .login-card h1{
+      font-family:'Plus Jakarta Sans',sans-serif;
+      font-size:1.6rem;font-weight:800;color:#fff;
+      letter-spacing:-0.03em;margin-bottom:6px;
+    }
+    .login-card p{
+      font-size:0.88rem;color:rgba(255,255,255,0.45);
+      margin-bottom:32px;
+    }
+
+    /* Admin badge */
+    .admin-badge{
+      display:inline-flex;align-items:center;gap:6px;
+      background:rgba(139,92,246,0.15);border:1px solid rgba(139,92,246,0.3);
+      color:#a78bfa;font-size:0.72rem;font-weight:700;
+      padding:4px 12px;border-radius:999px;margin-bottom:28px;
+      text-transform:uppercase;letter-spacing:0.08em;
+    }
+
+    /* Fields */
+    .field{margin-bottom:18px;}
+    .field label{
+      display:block;font-size:0.78rem;font-weight:600;
+      color:rgba(255,255,255,0.5);margin-bottom:7px;
+      text-transform:uppercase;letter-spacing:0.07em;
+    }
+    .field input{
+      width:100%;padding:12px 14px;
+      background:rgba(255,255,255,0.06);
+      border:1px solid rgba(255,255,255,0.1);
+      border-radius:var(--r-md);
+      font-size:0.95rem;color:#fff;outline:none;
+      transition:all 0.2s;font-family:'Inter',sans-serif;
+    }
+    .field input::placeholder{color:rgba(255,255,255,0.25);}
+    .field input:focus{
+      border-color:rgba(16,185,129,0.5);
+      background:rgba(255,255,255,0.08);
+      box-shadow:0 0 0 3px rgba(16,185,129,0.12);
+    }
+
+    .btn-login{
+      width:100%;padding:13px;
+      background:var(--gradient);color:#fff;
+      border:none;border-radius:var(--r-md);
+      font-family:'Plus Jakarta Sans',sans-serif;
+      font-size:0.95rem;font-weight:700;
+      cursor:pointer;transition:all 0.2s;
+      margin-top:8px;
+      box-shadow:0 4px 20px rgba(16,185,129,0.35);
+    }
+    .btn-login:hover{
+      transform:translateY(-1px);
+      box-shadow:0 8px 28px rgba(16,185,129,0.5);
+    }
+    .btn-login:disabled{opacity:0.6;cursor:not-allowed;transform:none;}
+
+    .error-box{
+      background:rgba(239,68,68,0.12);
+      border:1px solid rgba(239,68,68,0.3);
+      color:#fca5a5;font-size:0.84rem;
+      border-radius:var(--r-md);padding:11px 14px;
+      margin-bottom:16px;display:none;
+    }
+    .error-box.show{display:block;}
+
+    /* Security notice */
+    .security-notice{
+      margin-top:24px;padding-top:20px;
+      border-top:1px solid rgba(255,255,255,0.06);
+      text-align:center;
+    }
+    .security-notice p{
+      font-size:0.75rem;color:rgba(255,255,255,0.25);
+      line-height:1.6;margin:0;
+    }
+    .security-notice strong{color:rgba(255,255,255,0.35);}
+  </style>
+</head>
+<body>
+<div class="login-card">
+
+  <div class="logo">
+    <div class="logo-icon">🌱</div>
+    <div class="logo-text">Farm<span>Direct</span></div>
+  </div>
+
+  <div class="admin-badge">
+    🛡️ Admin Portal
+  </div>
+
+  <h1>Welcome back</h1>
+  <p>Sign in to access the admin control panel</p>
+
+  <div class="error-box" id="errorBox"></div>
+
+  <div class="field">
+    <label>Admin Phone Number</label>
+    <input type="tel" id="phone" placeholder="07XX XXX XXX"
+           autocomplete="tel" autofocus />
+  </div>
+
+  <div class="field">
+    <label>Password</label>
+    <input type="password" id="password" placeholder="••••••••••"
+           autocomplete="current-password"
+           onkeydown="if(event.key==='Enter') login()" />
+  </div>
+
+  <button class="btn-login" id="loginBtn" onclick="login()">
+    Sign in to Admin Panel →
+  </button>
+
+  <div class="security-notice">
+    <p>
+      <strong>Restricted access.</strong><br/>
+      This portal is for authorised FarmDirect administrators only.
+      Unauthorised access attempts are logged.
+    </p>
+  </div>
+
+</div>
+
+<script src="../admin-api.js"></script>
+<script>
+  document.addEventListener('DOMContentLoaded', () => {
+    // If already logged in as admin, go straight to dashboard
+    const session = AdminAPI.getSession();
+    if (session && session.role === 'admin') {
+      window.location.href = '../pages/dashboard.html';
+    }
+  });
+
+  async function login() {
+    const phone    = document.getElementById('phone').value.trim();
+    const password = document.getElementById('password').value;
+    const btn      = document.getElementById('loginBtn');
+    const errorBox = document.getElementById('errorBox');
+
+    errorBox.className = 'error-box';
+    if (!phone)    return showError('Phone number is required.');
+    if (!password) return showError('Password is required.');
+
+    btn.disabled    = true;
+    btn.textContent = 'Signing in…';
+
+    const result = await AdminAPI.login(phone, password);
+
+    btn.disabled    = false;
+    btn.textContent = 'Sign in to Admin Panel →';
+
+    if (!result.success) {
+      showError(result.message || 'Invalid credentials.');
+      return;
+    }
+
+    // Logged in as admin — go to dashboard
+    window.location.href = '../pages/dashboard.html';
+  }
+
+  function showError(msg) {
+    const el = document.getElementById('errorBox');
+    el.textContent = msg;
+    el.className   = 'error-box show';
+  }
+</script>
+</body>
+</html>
