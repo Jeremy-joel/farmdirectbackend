@@ -1,5 +1,7 @@
 // ============================================================
-// server.js — FarmDirect Backend Entry Point  v1.1
+// server.js — FarmDirect Backend Entry Point  v1.2
+// FIX: CORS middleware was never applied (app.useconst bug)
+//      Now correctly: const corsOptions = {...}; app.use(cors(corsOptions));
 // ============================================================
 require('dotenv').config();
 
@@ -14,21 +16,45 @@ const { testConnection } = require('./config/db');
 const app  = express();
 const PORT = process.env.PORT || 5000;
 
-// ── Security ─────────────────────────────────────────────────
+// ── Security ──────────────────────────────────────────────────
 app.use(helmet());
 
-app.use(cors({
-  origin: process.env.NODE_ENV === 'production'
-    ? process.env.FRONTEND_URL
-    : '*',
-  methods:        ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-}));
+// ── CORS — FIX: define then apply separately ──────────────────
+const corsOptions = {
+  origin: (origin, callback) => {
+    const allowed = [
+      process.env.FRONTEND_URL,
+      'https://freshlinkfarmer.netlify.app',
+      'https://freshlinkfarmeradmin.netlify.app',
+      'http://localhost:5500',
+      'http://127.0.0.1:5500',
+      'http://localhost:3000',
+      'http://localhost:5000',
+    ].filter(Boolean);
 
-// ── Logging ──────────────────────────────────────────────────
+    // Allow requests with no origin (Postman, mobile apps, curl)
+    if (!origin || allowed.includes(origin)) {
+      callback(null, true);
+    } else {
+      console.warn(`[CORS] Blocked origin: ${origin}`);
+      callback(new Error(`CORS blocked: ${origin}`));
+    }
+  },
+  credentials: true,
+  methods:     ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
+  allowedHeaders: ['Content-Type','Authorization'],
+};
+
+// Apply CORS — must be before any routes
+app.use(cors(corsOptions));
+
+// Handle preflight requests for all routes
+app.options('*', cors(corsOptions));
+
+// ── Logging ───────────────────────────────────────────────────
 app.use(morgan('dev'));
 
-// ── Body parsers ─────────────────────────────────────────────
+// ── Body parsers ──────────────────────────────────────────────
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
@@ -39,8 +65,7 @@ app.use(rateLimit({
   message:  { success: false, error: 'Too many requests. Try again in 15 minutes.', code: 429 },
 }));
 
-// ── Health check ─────────────────────────────────────────────
-// Open http://localhost:5000/health to confirm server is running
+// ── Health check ──────────────────────────────────────────────
 app.get('/health', (req, res) => {
   res.json({
     success:     true,
@@ -50,7 +75,7 @@ app.get('/health', (req, res) => {
   });
 });
 
-// ── Routes ───────────────────────────────────────────────────
+// ── Routes ────────────────────────────────────────────────────
 app.use('/api/auth',     require('./routes/auth.routes'));
 app.use('/api/products', require('./routes/product.routes'));
 app.use('/api/orders',   require('./routes/order.routes'));
@@ -59,7 +84,7 @@ app.use('/api/courier',  require('./routes/courier.routes'));
 app.use('/api/admin',    require('./routes/admin.routes'));
 app.use('/api/users',    require('./routes/user.routes'));
 
-// ── 404 handler ──────────────────────────────────────────────
+// ── 404 handler ───────────────────────────────────────────────
 app.use((req, res) => {
   res.status(404).json({
     success: false,
@@ -68,10 +93,13 @@ app.use((req, res) => {
   });
 });
 
-// ── Global error handler ─────────────────────────────────────
+// ── Global error handler ──────────────────────────────────────
 app.use((err, req, res, next) => {
   console.error('[ERROR]', err.message);
 
+  if (err.message && err.message.startsWith('CORS blocked')) {
+    return res.status(403).json({ success: false, error: 'CORS: Origin not allowed.', code: 403 });
+  }
   if (err.code === '23505')
     return res.status(409).json({ success: false, error: 'Record already exists.', code: 409 });
   if (err.code === '23503')
@@ -90,18 +118,15 @@ app.use((err, req, res, next) => {
   });
 });
 
-// ── Start server ─────────────────────────────────────────────
+// ── Start server ──────────────────────────────────────────────
 const startServer = async () => {
   const dbConnected = await testConnection();
 
   if (!dbConnected) {
     if (process.env.NODE_ENV === 'production') {
-      // In production: refuse to start without a database
       console.error('⛔ Production server cannot start without database. Exiting.');
       process.exit(1);
     } else {
-      // In development: start anyway so you can test routes
-      // Database-dependent routes will fail with a clear error
       console.warn('⚠️  Starting WITHOUT database connection.');
       console.warn('⚠️  Fix DATABASE_URL in .env or resume your Supabase project.');
       console.warn('⚠️  Routes that need the database will return errors until fixed.');
