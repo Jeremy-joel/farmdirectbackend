@@ -2,6 +2,7 @@
 const router = require('express').Router();
 const { verifyToken } = require('../middleware/auth.middleware');
 const { requireRole } = require('../middleware/role.middleware');
+const { authenticateToken } = require('../middleware/auth.middleware');
 const {
   getUsers, getUserById, getUserDocuments,
   setUserStatus, getOrders, getStats,
@@ -24,5 +25,4 @@ router.get('/payments',            getAllPayments);
 router.get('/courier-jobs',        getAllCourierJobs);
 
 module.exports = router;
-// Make sure this route is protected by authentication & admin check
 router.delete('/users/:id', authenticateToken, requireAdmin, deleteUser);
