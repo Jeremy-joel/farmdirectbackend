@@ -1,6 +1,7 @@
 // ============================================================
-// controllers/admin.controller.js — v2.2
+// controllers/admin.controller.js — v2.3
 // FIXES:
+//  - Added deleteUser function and exported it properly
 //  - platform_fee column renamed to commission (matches schema)
 //  - Added getAnalytics() for dashboard charts
 //  - Added getAllPayments() and getAllCourierJobs()
@@ -97,7 +98,6 @@ const getUserById = async (req, res) => {
 };
 
 // ── GET USER DOCUMENTS ──────────────────────────────────────
-// Returns Cloudinary URLs for admin document viewer
 const getUserDocuments = async (req, res) => {
   try {
     const { id } = req.params;
@@ -150,7 +150,7 @@ const getUserDocuments = async (req, res) => {
 // ── SET USER STATUS ─────────────────────────────────────────
 const setUserStatus = async (req, res) => {
   try {
-    const { id }             = req.params;
+    const { id }         = req.params;
     const { status, reason } = req.body;
 
     const allowed = ['active','suspended','rejected','pending'];
@@ -186,6 +186,24 @@ const setUserStatus = async (req, res) => {
   } catch (error) {
     console.error('[setUserStatus]', error);
     return err(res, 'Could not update user status.', 500);
+  }
+};
+
+// ── DELETE USER ─────────────────────────────────────────────
+const deleteUser = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const result = await db.query('DELETE FROM users WHERE id = $1 RETURNING *', [id]);
+
+    if (result.rows.length === 0) {
+      return err(res, 'User not found.', 404);
+    }
+
+    return ok(res, null, 'User deleted successfully.');
+  } catch (error) {
+    console.error('[deleteUser]', error);
+    return err(res, 'Failed to delete user: ' + error.message, 500);
   }
 };
 
@@ -235,7 +253,6 @@ const getOrders = async (req, res) => {
 };
 
 // ── GET ALL PAYMENTS ────────────────────────────────────────
-// FIX: was missing entirely — admin payments page got 404
 const getAllPayments = async (req, res) => {
   try {
     const { page = 1, limit = 20 } = req.query;
@@ -267,7 +284,6 @@ const getAllPayments = async (req, res) => {
 };
 
 // ── GET ALL COURIER JOBS ────────────────────────────────────
-// FIX: was missing entirely — admin couriers page got 404
 const getAllCourierJobs = async (req, res) => {
   try {
     const { status } = req.query;
@@ -295,13 +311,12 @@ const getAllCourierJobs = async (req, res) => {
 };
 
 // ── PLATFORM STATS ──────────────────────────────────────────
-// FIX: platform_fee → commission (column rename to match schema)
 const getStats = async (req, res) => {
   try {
     const [users, products, orders, payments] = await Promise.all([
       db.query(`
         SELECT
-          COUNT(*)                                     AS total,
+          COUNT(*)                                    AS total,
           COUNT(*) FILTER (WHERE status='pending')    AS pending,
           COUNT(*) FILTER (WHERE status='active')     AS active,
           COUNT(*) FILTER (WHERE role='buyer'   AND status='active') AS buyers,
@@ -328,7 +343,6 @@ const getStats = async (req, res) => {
           COALESCE(SUM(total_amount),0)                  AS total_value
         FROM orders
       `),
-      // FIX: commission, not platform_fee
       db.query(`
         SELECT
           COUNT(*) FILTER (WHERE status='completed')                       AS completed,
@@ -359,10 +373,10 @@ const getStats = async (req, res) => {
       },
       orders: {
         total:      parseInt(orders.rows[0].total      || 0),
-        placed:     parseInt(orders.rows[0].placed      || 0),
-        confirmed:  parseInt(orders.rows[0].confirmed   || 0),
-        dispatched: parseInt(orders.rows[0].dispatched  || 0),
-        delivered:  parseInt(orders.rows[0].delivered   || 0),
+        placed:     parseInt(orders.rows[0].placed     || 0),
+        confirmed:  parseInt(orders.rows[0].confirmed  || 0),
+        dispatched: parseInt(orders.rows[0].dispatched || 0),
+        delivered:  parseInt(orders.rows[0].delivered  || 0),
       },
       payments: {
         totalRevenue:    parseFloat(payments.rows[0].total_collected   || 0),
@@ -376,7 +390,6 @@ const getStats = async (req, res) => {
 };
 
 // ── ANALYTICS FOR CHARTS ────────────────────────────────────
-// FIX: was completely missing — dashboard charts had nothing to call
 const getAnalytics = async (req, res) => {
   try {
     const [
@@ -421,14 +434,14 @@ const getAnalytics = async (req, res) => {
   }
 };
 
-// ── PUBLIC STATS (homepage, no auth) ────────────────────────
+// ── PUBLIC STATS ────────────────────────────────────────────
 const getPublicStats = async (req, res) => {
   try {
     const result = await db.query(`
       SELECT
         (SELECT COUNT(*) FROM users WHERE role='farmer'  AND status='active') AS farmers,
         (SELECT COUNT(*) FROM products WHERE status='active')                  AS listings,
-        (SELECT COUNT(*) FROM orders)                                           AS orders,
+        (SELECT COUNT(*) FROM orders)                                          AS orders,
         (SELECT COUNT(*) FROM users WHERE role='buyer'   AND status='active') AS buyers,
         (SELECT COUNT(*) FROM users WHERE role='courier' AND status='active') AS couriers
     `);
@@ -444,29 +457,11 @@ module.exports = {
   getUserById,
   getUserDocuments,
   setUserStatus,
+  deleteUser,
   getOrders,
   getAllPayments,
   getAllCourierJobs,
   getStats,
   getAnalytics,
   getPublicStats,
-};
-// DELETE /api/admin/users/:id
-const deleteUser = async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    // Delete user (associated rows in buyer_profiles, farmer_profiles, etc., 
-    // will automatically delete if foreign keys have ON DELETE CASCADE)
-    const result = await db.query('DELETE FROM users WHERE id = $1 RETURNING *', [id]);
-
-    if (result.rows.length === 0) {
-      return err(res, 'User not found.', 404);
-    }
-
-    return ok(res, null, 'User deleted successfully.');
-  } catch (error) {
-    console.error('[deleteUser]', error);
-    return err(res, 'Failed to delete user: ' + error.message, 500);
-  }
 };
