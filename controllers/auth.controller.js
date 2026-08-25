@@ -481,8 +481,6 @@ const loginHandler = async (req, res) => {
   }
 };
 
-// ============================================================
-// PASTE THIS FUNCTION INTO YOUR auth.controller.js
 const uploadDocument = async (req, res) => {
   try {
     const userId  = req.user.userId;

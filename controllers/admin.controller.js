@@ -451,3 +451,22 @@ module.exports = {
   getAnalytics,
   getPublicStats,
 };
+// DELETE /api/admin/users/:id
+const deleteUser = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Delete user (associated rows in buyer_profiles, farmer_profiles, etc., 
+    // will automatically delete if foreign keys have ON DELETE CASCADE)
+    const result = await db.query('DELETE FROM users WHERE id = $1 RETURNING *', [id]);
+
+    if (result.rows.length === 0) {
+      return err(res, 'User not found.', 404);
+    }
+
+    return ok(res, null, 'User deleted successfully.');
+  } catch (error) {
+    console.error('[deleteUser]', error);
+    return err(res, 'Failed to delete user: ' + error.message, 500);
+  }
+};

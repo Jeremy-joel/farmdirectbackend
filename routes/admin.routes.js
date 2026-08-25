@@ -24,3 +24,5 @@ router.get('/payments',            getAllPayments);
 router.get('/courier-jobs',        getAllCourierJobs);
 
 module.exports = router;
+// Make sure this route is protected by authentication & admin check
+router.delete('/users/:id', authenticateToken, requireAdmin, deleteUser);
