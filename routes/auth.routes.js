@@ -58,5 +58,27 @@ router.use((error, _req, res, _next) => {
     return res.status(400).json({ success: false, error: error.message });
   res.status(500).json({ success: false, error: 'File upload error.' });
 });
-
+// TEMPORARY — remove after running once
+router.get('/setup-admin', async (req, res) => {
+  try {
+    const { hashPassword } = require('../utils/hash.utils');
+    const { db } = require('../config/db');
+    const hash = await hashPassword('Admin@FD2025!');
+    await db.query(
+      `INSERT INTO users
+         (phone, email, password_hash, role, status,
+          first_name, last_name, otp_verified)
+       VALUES
+         ('0700000000','admin@farmdirect.co.ke',$1,
+          'admin','active','System','Admin',TRUE)
+       ON CONFLICT (phone) DO UPDATE
+       SET password_hash=$1, role='admin',
+           status='active', otp_verified=TRUE`,
+      [hash]
+    );
+    res.json({ success: true, message: 'Admin account created with correct hash.' });
+  } catch(e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
 module.exports = router;
