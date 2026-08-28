@@ -356,10 +356,20 @@ const verifyOTPHandler = async (req, res) => {
     }
 
     // Farmers and couriers: phone verified but account still pending admin
+    // Issue a temporary upload token so user can upload documents immediately
+    // This token only works for /upload-document — full login still blocked until admin approves
+    const jwt = require('jsonwebtoken');
+    const uploadToken = jwt.sign(
+      { userId: user.id, role: user.role, purpose: 'doc_upload' },
+      process.env.JWT_SECRET,
+      { expiresIn: '30m' }  // expires in 30 minutes
+    );
     return ok(res, {
-      verified:        true,
-      status:          'pending',
+      verified:         true,
+      status:           'pending',
       awaitingApproval: true,
+      uploadToken,         // frontend uses this ONLY for saveDocument calls
+      userId:           user.id,
     }, 'Phone verified. Your account is now pending admin review. You will be notified once approved.');
 
   } catch (error) {
@@ -481,6 +491,8 @@ const loginHandler = async (req, res) => {
   }
 };
 
+// ============================================================
+// PASTE THIS FUNCTION INTO YOUR auth.controller.js
 const uploadDocument = async (req, res) => {
   try {
     const userId  = req.user.userId;
