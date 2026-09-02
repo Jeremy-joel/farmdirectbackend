@@ -356,20 +356,10 @@ const verifyOTPHandler = async (req, res) => {
     }
 
     // Farmers and couriers: phone verified but account still pending admin
-    // Issue a temporary upload token so user can upload documents immediately
-    // This token only works for /upload-document — full login still blocked until admin approves
-    const jwt = require('jsonwebtoken');
-    const uploadToken = jwt.sign(
-      { userId: user.id, role: user.role, purpose: 'doc_upload' },
-      process.env.JWT_SECRET,
-      { expiresIn: '30m' }  // expires in 30 minutes
-    );
     return ok(res, {
-      verified:         true,
-      status:           'pending',
+      verified:        true,
+      status:          'pending',
       awaitingApproval: true,
-      uploadToken,         // frontend uses this ONLY for saveDocument calls
-      userId:           user.id,
     }, 'Phone verified. Your account is now pending admin review. You will be notified once approved.');
 
   } catch (error) {
@@ -622,7 +612,79 @@ const changePassword = async (req, res) => {
   }
 };
 
+// ── REGISTRATION DOCUMENT UPLOAD (no JWT) ────────────────────
+// Called during registration after OTP verification.
+// Farmers and couriers stay 'pending' until admin approves,
+// meaning they cannot get a JWT. This endpoint validates by
+// checking the user exists and is pending instead.
+const uploadDocumentRegistration = async (req, res) => {
+  try {
+    const { userId, docType } = req.body;
+
+    if (!userId)  return err(res, 'userId is required.', 400);
+    if (!docType) return err(res, 'docType is required.', 400);
+
+    const validDocTypes = ['idFront','idBack','selfie','licence','vehicle'];
+    if (!validDocTypes.includes(docType)) {
+      return err(res, `Invalid docType. Must be one of: ${validDocTypes.join(', ')}.`, 400);
+    }
+
+    if (!req.file) {
+      return err(res, 'No file uploaded.', 400);
+    }
+
+    // Validate user exists and is pending (not just anyone can use this)
+    const userResult = await db.query(
+      'SELECT id, status, role FROM users WHERE id = $1',
+      [userId]
+    );
+    if (!userResult.rows.length) {
+      return err(res, 'User not found.', 404);
+    }
+    const user = userResult.rows[0];
+
+    // Only allow pending farmers and couriers (buyers get a real token)
+    const allowedRoles    = ['farmer', 'courier'];
+    const allowedStatuses = ['pending', 'active'];
+    if (!allowedRoles.includes(user.role) || !allowedStatuses.includes(user.status)) {
+      return err(res, 'Registration upload not available for this account.', 403);
+    }
+
+    // Upload to Cloudinary
+    const { uploadToCloudinary } = require('../config/cloudinary');
+    const uploaded = await uploadToCloudinary(
+      req.file.buffer,
+      `farmdirect/documents/${userId}`
+    );
+
+    console.log(`[registerUpload] ${docType} for ${userId}: ${uploaded.url}`);
+
+    // Save to database — INSERT or UPDATE if already exists
+    await db.query(
+      `INSERT INTO documents (user_id, doc_type, cloudinary_url, cloudinary_id, uploaded_at)
+       VALUES ($1, $2, $3, $4, NOW())
+       ON CONFLICT (user_id, doc_type)
+       DO UPDATE SET
+         cloudinary_url = EXCLUDED.cloudinary_url,
+         cloudinary_id  = EXCLUDED.cloudinary_id,
+         uploaded_at    = NOW()`,
+      [userId, docType, uploaded.url, uploaded.publicId]
+    );
+
+    return ok(res, {
+      docType,
+      url:      uploaded.url,
+      publicId: uploaded.publicId,
+    }, `${docType} uploaded successfully.`);
+
+  } catch (error) {
+    console.error('[uploadDocumentRegistration]', error.message);
+    return err(res, 'Document upload failed: ' + error.message, 500);
+  }
+};
+
 module.exports = {
+  uploadDocumentRegistration,
   registerBuyer,
   registerFarmer,
   registerCourier,

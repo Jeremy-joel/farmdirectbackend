@@ -58,4 +58,16 @@ router.use((error, _req, res, _next) => {
     return res.status(400).json({ success: false, error: error.message });
   res.status(500).json({ success: false, error: 'File upload error.' });
 });
+
+// ── Registration document upload (NO JWT needed) ─────────────
+// Used during registration BEFORE account is approved.
+// Security: validates userId exists + status is 'pending' + docType is valid.
+// Farmers/couriers cannot get a JWT until admin approves — this bypasses that.
+router.post(
+  '/register-upload',
+  docUpload.single('file'),
+  verifyDocument,
+  require('../controllers/auth.controller').uploadDocumentRegistration
+);
+
 module.exports = router;
