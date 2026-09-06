@@ -697,34 +697,36 @@ const forgotPassword = async (req, res) => {
     if (!userResult.rows.length)
       return err(res, 'No account found with that phone number.', 404);
 
-    const user = userResult.rows[0];
-
-    // Generate 6-digit OTP
+    const user   = userResult.rows[0];
     const otp    = Math.floor(100000 + Math.random() * 900000).toString();
-    const expiry = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+    const expiry = new Date(Date.now() + 10 * 60 * 1000);
 
-    // Store OTP in DB
+    // DELETE existing then INSERT — avoids ON CONFLICT constraint requirement
+    await db.query(
+      `DELETE FROM otps WHERE user_id = $1 AND purpose = 'password_reset'`,
+      [user.id]
+    );
     await db.query(
       `INSERT INTO otps (user_id, otp, purpose, expires_at, used)
-       VALUES ($1, $2, 'password_reset', $3, FALSE)
-       ON CONFLICT (user_id, purpose)
-       DO UPDATE SET otp=$2, expires_at=$3, used=FALSE`,
+       VALUES ($1, $2, 'password_reset', $3, FALSE)`,
       [user.id, otp, expiry]
     );
 
-    // Send SMS
-    await sendSMS(phone, `Your FarmDirect password reset code is: ${otp}. Valid for 10 minutes. Do not share this code.`);
+    // Send SMS — non-blocking: don't let SMS failure crash the whole request
+    sendSMS(phone, `Your FarmDirect password reset code is: ${otp}. Valid for 10 minutes. Do not share this code.`)
+      .catch(e => console.warn('[forgotPassword] SMS failed (non-critical):', e.message));
 
-    console.log(`[forgotPassword] OTP for ${phone}: ${otp}`);
+    console.log(`[forgotPassword] OTP sent for ${phone}: ${otp}`);
 
     return ok(res, {
       message: 'Reset code sent to your phone.',
+      // Show OTP in response only outside production (for testing)
       devOTP:  process.env.NODE_ENV !== 'production' ? otp : undefined,
     }, 'Reset code sent.');
 
   } catch (error) {
-    console.error('[forgotPassword]', error);
-    return err(res, 'Could not send reset code. Please try again.', 500);
+    console.error('[forgotPassword] Error:', error.message);
+    return err(res, 'Could not send reset code: ' + error.message, 500);
   }
 };
 
@@ -742,8 +744,10 @@ const verifyResetOTP = async (req, res) => {
 
     const otpResult = await db.query(
       `SELECT * FROM otps
-       WHERE user_id=$1 AND purpose='password_reset'
-         AND used=FALSE AND expires_at > NOW()
+       WHERE user_id = $1
+         AND purpose = 'password_reset'
+         AND used = FALSE
+         AND expires_at > NOW()
        ORDER BY created_at DESC LIMIT 1`,
       [userId]
     );
