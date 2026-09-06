@@ -59,6 +59,11 @@ router.use((error, _req, res, _next) => {
   res.status(500).json({ success: false, error: 'File upload error.' });
 });
 
+// ── Password reset (public — no auth required) ───────────────
+router.post('/forgot-password',    require('../controllers/auth.controller').forgotPassword);
+router.post('/verify-reset-otp',   require('../controllers/auth.controller').verifyResetOTP);
+router.post('/reset-password',     require('../controllers/auth.controller').resetPassword);
+
 // ── Registration document upload (NO JWT needed) ─────────────
 // Used during registration BEFORE account is approved.
 // Security: validates userId exists + status is 'pending' + docType is valid.

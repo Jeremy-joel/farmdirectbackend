@@ -683,8 +683,140 @@ const uploadDocumentRegistration = async (req, res) => {
   }
 };
 
+
+// ── FORGOT PASSWORD ───────────────────────────────────────────
+const forgotPassword = async (req, res) => {
+  try {
+    const { phone } = req.body;
+    if (!phone) return err(res, 'Phone number is required.', 400);
+
+    const userResult = await db.query(
+      'SELECT id, first_name, role FROM users WHERE phone = $1',
+      [phone.trim()]
+    );
+    if (!userResult.rows.length)
+      return err(res, 'No account found with that phone number.', 404);
+
+    const user = userResult.rows[0];
+
+    // Generate 6-digit OTP
+    const otp    = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiry = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+    // Store OTP in DB
+    await db.query(
+      `INSERT INTO otps (user_id, otp, purpose, expires_at, used)
+       VALUES ($1, $2, 'password_reset', $3, FALSE)
+       ON CONFLICT (user_id, purpose)
+       DO UPDATE SET otp=$2, expires_at=$3, used=FALSE`,
+      [user.id, otp, expiry]
+    );
+
+    // Send SMS
+    await sendSMS(phone, `Your FarmDirect password reset code is: ${otp}. Valid for 10 minutes. Do not share this code.`);
+
+    console.log(`[forgotPassword] OTP for ${phone}: ${otp}`);
+
+    return ok(res, {
+      message: 'Reset code sent to your phone.',
+      devOTP:  process.env.NODE_ENV !== 'production' ? otp : undefined,
+    }, 'Reset code sent.');
+
+  } catch (error) {
+    console.error('[forgotPassword]', error);
+    return err(res, 'Could not send reset code. Please try again.', 500);
+  }
+};
+
+// ── VERIFY RESET OTP ──────────────────────────────────────────
+const verifyResetOTP = async (req, res) => {
+  try {
+    const { phone, otp } = req.body;
+    if (!phone || !otp) return err(res, 'Phone and OTP are required.', 400);
+
+    const userResult = await db.query(
+      'SELECT id FROM users WHERE phone = $1', [phone.trim()]
+    );
+    if (!userResult.rows.length) return err(res, 'Account not found.', 404);
+    const userId = userResult.rows[0].id;
+
+    const otpResult = await db.query(
+      `SELECT * FROM otps
+       WHERE user_id=$1 AND purpose='password_reset'
+         AND used=FALSE AND expires_at > NOW()
+       ORDER BY created_at DESC LIMIT 1`,
+      [userId]
+    );
+
+    if (!otpResult.rows.length)
+      return err(res, 'Code is invalid or has expired. Please request a new one.', 400);
+
+    if (otpResult.rows[0].otp !== String(otp))
+      return err(res, 'Incorrect code. Please try again.', 400);
+
+    // Mark OTP used
+    await db.query('UPDATE otps SET used=TRUE WHERE id=$1', [otpResult.rows[0].id]);
+
+    // Issue a short-lived reset token (10 mins)
+    const jwt        = require('jsonwebtoken');
+    const resetToken = jwt.sign(
+      { userId, purpose: 'password_reset' },
+      process.env.JWT_SECRET,
+      { expiresIn: '10m' }
+    );
+
+    return ok(res, { resetToken }, 'Code verified. You can now set a new password.');
+
+  } catch (error) {
+    console.error('[verifyResetOTP]', error);
+    return err(res, 'Verification failed. Please try again.', 500);
+  }
+};
+
+// ── RESET PASSWORD ────────────────────────────────────────────
+const resetPassword = async (req, res) => {
+  try {
+    const { phone, resetToken, newPassword } = req.body;
+    if (!resetToken || !newPassword)
+      return err(res, 'Reset token and new password are required.', 400);
+
+    if (newPassword.length < 8)
+      return err(res, 'Password must be at least 8 characters.', 400);
+
+    // Verify reset token
+    const jwt = require('jsonwebtoken');
+    let decoded;
+    try {
+      decoded = jwt.verify(resetToken, process.env.JWT_SECRET);
+    } catch(e) {
+      return err(res, 'Reset link has expired. Please start over.', 401);
+    }
+
+    if (decoded.purpose !== 'password_reset')
+      return err(res, 'Invalid reset token.', 401);
+
+    // Hash new password
+    const { hashPassword } = require('../utils/hash.utils');
+    const hash = await hashPassword(newPassword);
+
+    await db.query(
+      'UPDATE users SET password_hash=$1, updated_at=NOW() WHERE id=$2',
+      [hash, decoded.userId]
+    );
+
+    return ok(res, null, 'Password reset successfully. You can now log in.');
+
+  } catch (error) {
+    console.error('[resetPassword]', error);
+    return err(res, 'Could not reset password. Please try again.', 500);
+  }
+};
+
 module.exports = {
   uploadDocumentRegistration,
+  forgotPassword,
+  verifyResetOTP,
+  resetPassword,
   registerBuyer,
   registerFarmer,
   registerCourier,

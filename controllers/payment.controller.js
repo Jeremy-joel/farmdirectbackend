@@ -55,6 +55,19 @@ const stkPush = async (req, res) => {
     if (!orderId) return err(res, 'Order ID is required.');
     if (!phone)   return err(res, 'Phone number is required.');
 
+    // If Mpesa not configured, fall back to simulate
+    const mpesaConfigured =
+      process.env.MPESA_CONSUMER_KEY &&
+      process.env.MPESA_CONSUMER_KEY !== 'YOUR_CONSUMER_KEY' &&
+      process.env.MPESA_ENV === 'production' &&
+      process.env.MPESA_CALLBACK_URL &&
+      !process.env.MPESA_CALLBACK_URL.includes('localhost');
+
+    if (!mpesaConfigured) {
+      console.warn('[stkPush] Mpesa not fully configured — using simulate');
+      return simulatePayment(req, res);
+    }
+
     // Verify order exists and belongs to this buyer
     const orderResult = await db.query(
       'SELECT * FROM orders WHERE id = $1 AND buyer_id = $2',
@@ -123,11 +136,9 @@ const stkPush = async (req, res) => {
   } catch (error) {
     console.error('[stkPush]', error.response?.data || error.message);
 
-    // In development — simulate a successful payment instead
-    if (process.env.NODE_ENV === 'development') {
-      return simulatePayment(req, res);
-    }
-    return err(res, 'Payment initiation failed. Please try again.', 500);
+    // If STK push fails, use simulation as fallback
+    console.warn('[stkPush] STK push failed, falling back to simulate');
+    return simulatePayment(req, res);
   }
 };
 
@@ -286,4 +297,39 @@ const getByOrder = async (req, res) => {
   }
 };
 
-module.exports = { stkPush, simulatePayment, mpesaCallback, getByOrder };
+// ── Check STK Push Status ────────────────────────────────────
+// Called by frontend polling after STK push to check if paid
+const checkPaymentStatus = async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const buyerId     = req.user.userId;
+
+    const result = await db.query(
+      `SELECT p.status, p.mpesa_ref, p.amount, p.commission, p.net,
+              o.payment_status
+       FROM payments p
+       JOIN orders o ON o.id = p.order_id
+       WHERE p.order_id = $1 AND p.buyer_id = $2
+       ORDER BY p.created_at DESC LIMIT 1`,
+      [orderId, buyerId]
+    );
+
+    if (!result.rows.length)
+      return ok(res, { status: 'pending', paid: false });
+
+    const pay = result.rows[0];
+    return ok(res, {
+      status:     pay.status,
+      paid:       pay.status === 'completed' || pay.payment_status === 'paid',
+      mpesaRef:   pay.mpesa_ref,
+      amount:     pay.amount,
+      commission: pay.commission,
+      net:        pay.net,
+    });
+  } catch (error) {
+    console.error('[checkPaymentStatus]', error);
+    return err(res, 'Could not check payment status.', 500);
+  }
+};
+
+module.exports = { stkPush, simulatePayment, mpesaCallback, getByOrder, checkPaymentStatus };

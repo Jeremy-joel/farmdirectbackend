@@ -12,4 +12,6 @@ router.post('/mpesa/stk-push', verifyToken, requireRole('buyer'), controller.stk
 router.post('/mpesa/simulate', verifyToken, requireRole('buyer'), controller.simulatePayment);
 router.get('/order/:orderId',  verifyToken, controller.getByOrder);
 
+router.get('/status/:orderId', verifyToken, controller.checkPaymentStatus);
+
 module.exports = router;
