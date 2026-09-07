@@ -703,7 +703,7 @@ const forgotPassword = async (req, res) => {
 
     // Use existing storeOTP util — stores as bcrypt hash using phone column
     const otp = generateOTP();
-    await storeOTP(normalizedPhone, otp, 'password_reset');
+    await storeOTP(normalizedPhone, otp, 'reset');
 
     // Send SMS — non-blocking so SMS failure does not crash the request
     sendSMS(normalizedPhone,
@@ -732,7 +732,7 @@ const verifyResetOTP = async (req, res) => {
     if (!normalizedPhone) return err(res, 'Invalid phone number format.', 400);
 
     // validateOTP uses phone column + bcrypt compare — matches otp.utils.js exactly
-    const result = await validateOTP(normalizedPhone, otp, 'password_reset');
+    const result = await validateOTP(normalizedPhone, otp, 'reset');
     if (!result.valid)
       return err(res, result.message || 'Incorrect code. Please try again.', 400);
 
