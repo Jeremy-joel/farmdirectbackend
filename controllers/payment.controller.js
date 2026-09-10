@@ -5,11 +5,8 @@
 //   1. Buyer calls stkPush → Mpesa prompt appears on their phone
 //   2. Buyer enters PIN → Safaricom calls our callback URL
 //   3. callback() receives result → updates payment + order
-//   4. Order moves from 'placed' to 'paid'
+//   4. Order moves from 'placed' to 'paid' & Escrow updated
 //   5. Farmer confirms → courier job released
-//
-// In sandbox mode: use Mpesa test credentials
-// In production:   use real Daraja credentials + public URL
 // ============================================================
 
 const axios        = require('axios');
@@ -46,7 +43,6 @@ const getDarajaToken = async () => {
 };
 
 // ── STK Push ──────────────────────────────────────────────────
-// Triggers Mpesa payment prompt on buyer's phone.
 const stkPush = async (req, res) => {
   try {
     const buyerId        = req.user.userId;
@@ -55,7 +51,6 @@ const stkPush = async (req, res) => {
     if (!orderId) return err(res, 'Order ID is required.');
     if (!phone)   return err(res, 'Phone number is required.');
 
-    // If Mpesa not configured, fall back to simulate
     const mpesaConfigured =
       process.env.MPESA_CONSUMER_KEY &&
       process.env.MPESA_CONSUMER_KEY !== 'YOUR_CONSUMER_KEY' &&
@@ -68,7 +63,6 @@ const stkPush = async (req, res) => {
       return simulatePayment(req, res);
     }
 
-    // Verify order exists and belongs to this buyer
     const orderResult = await db.query(
       'SELECT * FROM orders WHERE id = $1 AND buyer_id = $2',
       [orderId, buyerId]
@@ -81,22 +75,19 @@ const stkPush = async (req, res) => {
     if (order.payment_status === 'paid')
       return err(res, 'This order has already been paid.');
 
-    const amount       = Math.ceil(order.total_amount); // Mpesa requires integer
+    const amount       = Math.ceil(order.total_amount);
     const mpesaPhone   = formatMpesaPhone(phone);
     const shortcode    = process.env.MPESA_SHORTCODE;
     const passkey      = process.env.MPESA_PASSKEY;
     const callbackUrl  = process.env.MPESA_CALLBACK_URL;
 
-    // Generate timestamp and password
     const timestamp = new Date().toISOString()
       .replace(/[-:T.Z]/g, '').slice(0, 14);
     const password  = Buffer.from(`${shortcode}${passkey}${timestamp}`)
       .toString('base64');
 
-    // Get Daraja access token
     const { token, baseUrl } = await getDarajaToken();
 
-    // Send STK Push request to Safaricom
     const stkResponse = await axios.post(
       `${baseUrl}/mpesa/stkpush/v1/processrequest`,
       {
@@ -117,7 +108,6 @@ const stkPush = async (req, res) => {
 
     const checkoutRequestId = stkResponse.data.CheckoutRequestID;
 
-    // Save pending payment record
     await db.query(
       `INSERT INTO payments
          (order_id, buyer_id, amount, method, mpesa_phone,
@@ -135,16 +125,12 @@ const stkPush = async (req, res) => {
 
   } catch (error) {
     console.error('[stkPush]', error.response?.data || error.message);
-
-    // If STK push fails, use simulation as fallback
     console.warn('[stkPush] STK push failed, falling back to simulate');
     return simulatePayment(req, res);
   }
 };
 
 // ── Simulate Payment (Development Only) ──────────────────────
-// Because Daraja sandbox requires a public callback URL,
-// we simulate a successful payment in local development.
 const simulatePayment = async (req, res) => {
   try {
     const buyerId       = req.user.userId;
@@ -160,27 +146,38 @@ const simulatePayment = async (req, res) => {
     const order      = orderResult.rows[0];
     const amount     = Math.ceil(order.total_amount);
     const commission = Math.round(amount * 0.05);
+    const netAmount  = amount - commission;
     const mpesaRef   = 'SIM' + Math.random().toString(36).substr(2,8).toUpperCase();
 
-    // Record payment
+    // 1. Record payment
     await db.query(
       `INSERT INTO payments
          (order_id, buyer_id, amount, commission, net,
           method, mpesa_phone, mpesa_ref, status)
        VALUES ($1,$2,$3,$4,$5,'mpesa',$6,$7,'completed')`,
-      [orderId, buyerId, amount, commission, amount - commission,
+      [orderId, buyerId, amount, commission, netAmount,
        formatMpesaPhone(phone || '0700000000'), mpesaRef]
     );
 
-    // Update order payment status
+    // 2. Update order status and payment_status to 'paid'
     await db.query(
       `UPDATE orders
-       SET payment_status = 'paid', mpesa_ref = $1, updated_at = NOW()
+       SET payment_status = 'paid', status = 'paid', mpesa_ref = $1, updated_at = NOW()
        WHERE id = $2`,
       [mpesaRef, orderId]
     );
 
-    // Notify farmer
+    // 3. Update Farmer Escrow Wallet Balance
+    await db.query(
+      `INSERT INTO farmer_wallets (farmer_id, locked_in_escrow, available_balance)
+       VALUES ($1, $2, 0)
+       ON CONFLICT (farmer_id)
+       DO UPDATE SET locked_in_escrow = farmer_wallets.locked_in_escrow + $2,
+                     updated_at = NOW()`,
+      [order.farmer_id, netAmount]
+    );
+
+    // 4. Notify farmer
     const farmerResult = await db.query(
       'SELECT phone, first_name FROM users WHERE id = $1', [order.farmer_id]
     );
@@ -195,7 +192,7 @@ const simulatePayment = async (req, res) => {
       mpesaRef,
       amount,
       commission,
-      net:     amount - commission,
+      net: netAmount,
       status:  'completed',
       devMode: true,
     }, `[DEV] Payment simulated. Mpesa ref: ${mpesaRef}`);
@@ -207,16 +204,13 @@ const simulatePayment = async (req, res) => {
 };
 
 // ── Mpesa Callback ────────────────────────────────────────────
-// Called by Safaricom servers after buyer enters Mpesa PIN.
-// Must always return 200 OK to Safaricom — never return an error.
 const mpesaCallback = async (req, res) => {
   try {
-    const body      = req.body?.Body?.stkCallback;
+    const body       = req.body?.Body?.stkCallback;
     const resultCode = body?.ResultCode;
     const checkoutId = body?.CheckoutRequestID;
 
     if (resultCode === 0) {
-      // Payment successful
       const metadata = body.CallbackMetadata?.Item || [];
       const getMeta  = (name) =>
         metadata.find(i => i.Name === name)?.Value;
@@ -224,7 +218,6 @@ const mpesaCallback = async (req, res) => {
       const mpesaRef = getMeta('MpesaReceiptNumber');
       const amount   = getMeta('Amount');
 
-      // Find the pending payment
       const payResult = await db.query(
         'SELECT * FROM payments WHERE checkout_request_id = $1', [checkoutId]
       );
@@ -232,41 +225,52 @@ const mpesaCallback = async (req, res) => {
       if (payResult.rows.length > 0) {
         const payment    = payResult.rows[0];
         const commission = Math.round(amount * 0.05);
+        const netAmount  = amount - commission;
 
         await db.query(
           `UPDATE payments
            SET status = 'completed', mpesa_ref = $1,
                commission = $2, net = $3
            WHERE checkout_request_id = $4`,
-          [mpesaRef, commission, amount - commission, checkoutId]
+          [mpesaRef, commission, netAmount, checkoutId]
         );
 
         await db.query(
           `UPDATE orders
-           SET payment_status = 'paid', mpesa_ref = $1, updated_at = NOW()
+           SET payment_status = 'paid', status = 'paid', mpesa_ref = $1, updated_at = NOW()
            WHERE id = $2`,
           [mpesaRef, payment.order_id]
         );
 
-        // Notify farmer
         const orderRes = await db.query(
           'SELECT farmer_id FROM orders WHERE id = $1', [payment.order_id]
         );
         if (orderRes.rows.length > 0) {
+          const farmerId = orderRes.rows[0].farmer_id;
+
+          // Lock funds into Escrow for the farmer
+          await db.query(
+            `INSERT INTO farmer_wallets (farmer_id, locked_in_escrow, available_balance)
+             VALUES ($1, $2, 0)
+             ON CONFLICT (farmer_id)
+             DO UPDATE SET locked_in_escrow = farmer_wallets.locked_in_escrow + $2,
+                           updated_at = NOW()`,
+            [farmerId, netAmount]
+          );
+
           const farmerRes = await db.query(
             'SELECT phone, first_name FROM users WHERE id = $1',
-            [orderRes.rows[0].farmer_id]
+            [farmerId]
           );
           if (farmerRes.rows.length > 0) {
             await sendSMS(
               farmerRes.rows[0].phone,
-              `Payment confirmed! Ksh ${amount} received. Please log in and confirm the order.`
+              `Payment confirmed! Ksh ${amount} received in Escrow. Please log in and confirm the order.`
             );
           }
         }
       }
     } else {
-      // Payment failed or cancelled
       await db.query(
         `UPDATE payments SET status = 'failed'
          WHERE checkout_request_id = $1`,
@@ -274,7 +278,6 @@ const mpesaCallback = async (req, res) => {
       );
     }
 
-    // Always return 200 to Safaricom
     res.status(200).json({ ResultCode: 0, ResultDesc: 'Accepted' });
   } catch (error) {
     console.error('[mpesaCallback]', error);
@@ -298,7 +301,6 @@ const getByOrder = async (req, res) => {
 };
 
 // ── Check STK Push Status ────────────────────────────────────
-// Called by frontend polling after STK push to check if paid
 const checkPaymentStatus = async (req, res) => {
   try {
     const { orderId } = req.params;
