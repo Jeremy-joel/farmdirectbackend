@@ -690,27 +690,30 @@ const forgotPassword = async (req, res) => {
     const { phone } = req.body;
     if (!phone) return err(res, 'Phone number is required.', 400);
 
-    const normalizedPhone = normalizePhone(phone);
-    if (!normalizedPhone) return err(res, 'Invalid phone number format.', 400);
-
-    // Check user exists
+    // Look up user using the EXACT phone as stored in DB
+    // Do NOT normalize — phones stored as entered during registration (e.g. 0785216754)
     const userResult = await db.query(
-      'SELECT id, first_name FROM users WHERE phone = $1',
-      [normalizedPhone]
+      `SELECT id, first_name, phone FROM users WHERE phone = $1`,
+      [phone.trim()]
     );
+
     if (!userResult.rows.length)
       return err(res, 'No account found with that phone number.', 404);
 
-    // Use existing storeOTP util — stores as bcrypt hash using phone column
+    // Use the EXACT phone from the DB record for all OTP operations
+    const storedPhone = userResult.rows[0].phone;
+    const userId      = userResult.rows[0].id;
+
+    // Generate and store OTP using the stored phone (not input phone)
     const otp = generateOTP();
-    await storeOTP(normalizedPhone, otp, 'reset');
+    await storeOTP(storedPhone, otp, 'reset');
 
-    // Send SMS — non-blocking so SMS failure does not crash the request
-    sendSMS(normalizedPhone,
+    // Send SMS — non-blocking: SMS failure must not crash the request
+    sendSMS(storedPhone,
       `Your FarmDirect password reset code is: ${otp}. Valid for 10 minutes. Do not share this code.`
-    ).catch(e => console.warn('[forgotPassword] SMS failed:', e.message));
+    ).catch(e => console.warn('[forgotPassword] SMS failed (non-critical):', e.message));
 
-    console.log(`[forgotPassword] Reset OTP for ${normalizedPhone}: ${otp}`);
+    console.log(`[forgotPassword] OTP for ${storedPhone}: ${otp}`);
 
     return ok(res, {
       devOTP: process.env.NODE_ENV !== 'production' ? otp : undefined,
@@ -728,24 +731,25 @@ const verifyResetOTP = async (req, res) => {
     const { phone, otp } = req.body;
     if (!phone || !otp) return err(res, 'Phone and OTP are required.', 400);
 
-    const normalizedPhone = normalizePhone(phone);
-    if (!normalizedPhone) return err(res, 'Invalid phone number format.', 400);
+    // Look up user to get their exact stored phone
+    const userResult = await db.query(
+      'SELECT id, phone FROM users WHERE phone = $1', [phone.trim()]
+    );
+    if (!userResult.rows.length)
+      return err(res, 'No account found with that phone number.', 404);
 
-    // validateOTP uses phone column + bcrypt compare — matches otp.utils.js exactly
-    const result = await validateOTP(normalizedPhone, otp, 'reset');
+    const userId      = userResult.rows[0].id;
+    const storedPhone = userResult.rows[0].phone;
+
+    // Validate OTP using the EXACT stored phone (same as used in storeOTP)
+    const result = await validateOTP(storedPhone, otp, 'reset');
     if (!result.valid)
       return err(res, result.message || 'Incorrect code. Please try again.', 400);
 
-    // Get userId to embed in reset token
-    const userResult = await db.query(
-      'SELECT id FROM users WHERE phone = $1', [normalizedPhone]
-    );
-    const userId = userResult.rows[0]?.id;
-
-    // Issue a short-lived reset token (10 mins)
+    // Issue a short-lived reset token containing the userId (10 mins)
     const jwt        = require('jsonwebtoken');
     const resetToken = jwt.sign(
-      { userId, phone: normalizedPhone, purpose: 'password_reset' },
+      { userId, purpose: 'reset' },
       process.env.JWT_SECRET,
       { expiresIn: '10m' }
     );
@@ -777,21 +781,29 @@ const resetPassword = async (req, res) => {
       return err(res, 'Reset link has expired. Please start over.', 401);
     }
 
-    if (decoded.purpose !== 'password_reset')
+    if (decoded.purpose !== 'reset')
       return err(res, 'Invalid reset token.', 401);
 
-    // Use userId from token (or phone as fallback)
-    const lookupId = decoded.userId;
-    if (!lookupId) return err(res, 'Invalid reset token.', 401);
+    const userId = decoded.userId;
+    if (!userId) return err(res, 'Invalid reset token.', 401);
 
-    // Hash new password
-    const { hashPassword } = require('../utils/hash.utils');
-    const hash = await hashPassword(newPassword);
+    // Verify user still exists
+    const userCheck = await db.query('SELECT id FROM users WHERE id = $1', [userId]);
+    if (!userCheck.rows.length) return err(res, 'User account not found.', 404);
 
-    await db.query(
-      'UPDATE users SET password_hash=$1, updated_at=NOW() WHERE id=$2',
-      [hash, lookupId]
+    // Hash using the SAME hashPassword used everywhere else in the app
+    const newHash = await hashPassword(newPassword);
+
+    const updateResult = await db.query(
+      `UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2
+       RETURNING id`,
+      [newHash, userId]
     );
+
+    if (!updateResult.rows.length)
+      return err(res, 'Could not update password. Please try again.', 500);
+
+    console.log(`[resetPassword] Password updated for userId: ${userId}`);
 
     return ok(res, null, 'Password reset successfully. You can now log in.');
 
