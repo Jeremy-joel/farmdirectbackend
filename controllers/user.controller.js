@@ -78,4 +78,131 @@ const updateProfile = async (req, res) => {
   }
 };
 
-module.exports = { getProfile, updateProfile };
+
+// ── GET WALLET BALANCE ────────────────────────────────────────
+const getWallet = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const role   = req.user.role;
+
+    if (role === 'farmer') {
+      const result = await db.query(
+        `SELECT available_balance, locked_in_escrow, total_earned
+         FROM farmer_wallets WHERE farmer_id = $1`,
+        [userId]
+      );
+      const wallet = result.rows[0] || { available_balance:0, locked_in_escrow:0, total_earned:0 };
+      return ok(res, {
+        availableBalance: parseFloat(wallet.available_balance || 0),
+        lockedInEscrow:   parseFloat(wallet.locked_in_escrow  || 0),
+        totalEarned:      parseFloat(wallet.total_earned      || 0),
+        role: 'farmer',
+      });
+    }
+
+    if (role === 'courier') {
+      const result = await db.query(
+        `SELECT available_balance, total_earned
+         FROM courier_wallets WHERE courier_id = $1`,
+        [userId]
+      );
+      const wallet = result.rows[0] || { available_balance:0, total_earned:0 };
+      return ok(res, {
+        availableBalance: parseFloat(wallet.available_balance || 0),
+        totalEarned:      parseFloat(wallet.total_earned      || 0),
+        role: 'courier',
+      });
+    }
+
+    return err(res, 'Wallet not available for this role.', 403);
+  } catch (error) {
+    console.error('[getWallet]', error.message);
+    return err(res, 'Could not load wallet.', 500);
+  }
+};
+
+// ── GET WALLET TRANSACTIONS ────────────────────────────────────
+const getWalletTransactions = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { period } = req.query; // 'week' | 'month' | 'all'
+
+    let dateFilter = '';
+    if (period === 'week')
+      dateFilter = `AND created_at >= NOW() - INTERVAL '7 days'`;
+    else if (period === 'month')
+      dateFilter = `AND created_at >= NOW() - INTERVAL '30 days'`;
+
+    const result = await db.query(
+      `SELECT id, type, amount, order_id, description, status, created_at
+       FROM wallet_transactions
+       WHERE user_id = $1 ${dateFilter}
+       ORDER BY created_at DESC LIMIT 100`,
+      [userId]
+    );
+
+    const txns  = result.rows;
+    const total = txns.reduce((s,t) => s + parseFloat(t.amount||0), 0);
+
+    return ok(res, { transactions: txns, total, count: txns.length });
+  } catch (error) {
+    console.error('[getWalletTransactions]', error.message);
+    return err(res, 'Could not load transactions.', 500);
+  }
+};
+
+// ── REQUEST WITHDRAWAL ────────────────────────────────────────
+const requestWithdrawal = async (req, res) => {
+  try {
+    const userId     = req.user.userId;
+    const role       = req.user.role;
+    const { amount, mpesaPhone } = req.body;
+
+    if (!amount || amount <= 0)  return err(res, 'Invalid withdrawal amount.', 400);
+    if (!mpesaPhone)             return err(res, 'Mpesa phone number is required.', 400);
+    if (!['farmer','courier'].includes(role))
+      return err(res, 'Withdrawal not available for this role.', 403);
+
+    // Check sufficient balance
+    const walletTable = role === 'farmer' ? 'farmer_wallets' : 'courier_wallets';
+    const walletKey   = role === 'farmer' ? 'farmer_id'      : 'courier_id';
+    const balResult   = await db.query(
+      `SELECT available_balance FROM ${walletTable} WHERE ${walletKey} = $1`,
+      [userId]
+    );
+    const balance = parseFloat(balResult.rows[0]?.available_balance || 0);
+    if (amount > balance)
+      return err(res, `Insufficient balance. Available: Ksh ${balance.toLocaleString()}.`, 400);
+
+    // Deduct from available balance immediately (pending payout)
+    await db.query(
+      `UPDATE ${walletTable} SET
+         available_balance = available_balance - $1,
+         updated_at        = NOW()
+       WHERE ${walletKey} = $2`,
+      [amount, userId]
+    );
+
+    // Create withdrawal request for admin to process
+    await db.query(
+      `INSERT INTO withdrawal_requests (user_id, role, amount, mpesa_phone, status)
+       VALUES ($1, $2, $3, $4, 'pending')`,
+      [userId, role, amount, mpesaPhone]
+    );
+
+    // Log transaction
+    await db.query(
+      `INSERT INTO wallet_transactions (user_id, type, amount, description, status)
+       VALUES ($1, 'withdrawal_requested', $2, 'Withdrawal requested via Mpesa', 'pending')`,
+      [userId, amount]
+    );
+
+    return ok(res, { amount, mpesaPhone, status: 'pending' },
+      `Withdrawal of Ksh ${amount} requested. Admin will process within 24 hours.`);
+  } catch (error) {
+    console.error('[requestWithdrawal]', error.message);
+    return err(res, 'Could not process withdrawal.', 500);
+  }
+};
+
+module.exports = { getProfile, updateProfile, getWallet, getWalletTransactions, requestWithdrawal };

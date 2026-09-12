@@ -336,21 +336,73 @@ const updateStatus = async (req, res) => {
         );
       }
 
-      // Mark payment as settled (farmer can now request payout)
+      // Mark payment as settled
       await db.query(
         `UPDATE payments SET status = 'settled' WHERE order_id = $1`,
         [id]
       );
+
+      // ── Release escrow to farmer wallet ───────────────────
+      const payResult = await db.query(
+        `SELECT amount, commission, net FROM payments
+         WHERE order_id = $1 AND status = 'settled' LIMIT 1`,
+        [id]
+      );
+      const paidAmount   = payResult.rows[0]?.amount     || order.total_amount;
+      const commission   = payResult.rows[0]?.commission || Math.round(paidAmount * 0.05);
+      const farmerNet    = payResult.rows[0]?.net        || (paidAmount - commission);
+      const deliveryFee  = order.delivery_fee            || 150;
+      const courierPay   = deliveryFee;
+      const farmerPayout = farmerNet - courierPay;
+
+      // Credit farmer available balance (move from escrow → available)
+      await db.query(
+        `INSERT INTO farmer_wallets (farmer_id, available_balance, locked_in_escrow, total_earned)
+         VALUES ($1, $2, 0, $2)
+         ON CONFLICT (farmer_id) DO UPDATE SET
+           available_balance = farmer_wallets.available_balance + $2,
+           locked_in_escrow  = GREATEST(0, farmer_wallets.locked_in_escrow - $3),
+           total_earned      = farmer_wallets.total_earned + $2,
+           updated_at        = NOW()`,
+        [order.farmer_id, farmerPayout, farmerNet]
+      );
+
+      // Log farmer wallet transaction
+      await db.query(
+        `INSERT INTO wallet_transactions
+           (user_id, type, amount, order_id, description, status)
+         VALUES ($1, 'escrow_released', $2, $3, 'Order payment released after delivery', 'completed')`,
+        [order.farmer_id, farmerPayout, id]
+      );
+
+      // ── Credit courier wallet ─────────────────────────────
+      if (order.courier_id) {
+        await db.query(
+          `INSERT INTO courier_wallets (courier_id, available_balance, total_earned)
+           VALUES ($1, $2, $2)
+           ON CONFLICT (courier_id) DO UPDATE SET
+             available_balance = courier_wallets.available_balance + $2,
+             total_earned      = courier_wallets.total_earned + $2,
+             updated_at        = NOW()`,
+          [order.courier_id, courierPay]
+        );
+
+        await db.query(
+          `INSERT INTO wallet_transactions
+             (user_id, type, amount, order_id, description, status)
+           VALUES ($1, 'courier_credited', $2, $3, 'Delivery fee credited', 'completed')`,
+          [order.courier_id, courierPay, id]
+        );
+      }
 
       // Notify farmer their payment is ready
       const farmerResult = await db.query(
         'SELECT phone, first_name FROM users WHERE id = $1', [order.farmer_id]
       );
       if (farmerResult.rows.length > 0) {
-        const amount  = Math.round(order.total_amount * 0.95);
         await sendSMS(
           farmerResult.rows[0].phone,
-          `Order delivered! Ksh ${amount} has been credited to your FarmDirect account (after 5% platform fee). Log in to request payout.`
+          `Order delivered! Ksh ${farmerPayout} has been credited to your FarmDirect wallet (after platform fee). Log in to request payout.`
         );
       }
 
