@@ -66,7 +66,7 @@ const create = async (req, res) => {
       return { product, quantity: item.quantity, itemTotal };
     });
 
-    const deliveryFee = 150;
+    const deliveryFee = parseInt(req.body.deliveryFee || req.body.delivery_fee || 150);
     const totalAmount = subtotal + deliveryFee;
     const firstProduct = orderItems[0].product;
     const farmerId     = firstProduct.farmer_id;
