@@ -452,6 +452,109 @@ const getPublicStats = async (req, res) => {
   }
 };
 
+
+// ── ADMIN: GET ALL PRODUCTS ───────────────────────────────────
+const getAllProducts = async (req, res) => {
+  try {
+    const { status, search, page = 1 } = req.query;
+    const limit  = 20;
+    const offset = (parseInt(page) - 1) * limit;
+    const wheres = [];
+    const params = [];
+
+    if (status && status !== 'all') {
+      params.push(status);
+      wheres.push(`p.status = $${params.length}`);
+    }
+    if (search) {
+      params.push(`%${search}%`);
+      wheres.push(`(p.name ILIKE $${params.length} OR p.description ILIKE $${params.length} OR u.first_name ILIKE $${params.length})`);
+    }
+
+    const where = wheres.length ? 'WHERE ' + wheres.join(' AND ') : '';
+    params.push(limit, offset);
+
+    const result = await db.query(
+      `SELECT
+         p.id, p.name, p.category, p.price, p.unit, p.stock,
+         p.status, p.image_url, p.created_at, p.updated_at,
+         u.first_name || ' ' || u.last_name AS farmer_name,
+         u.phone AS farmer_phone,
+         fp.county AS farm_county
+       FROM products p
+       JOIN users u ON u.id = p.farmer_id
+       LEFT JOIN farmer_profiles fp ON fp.user_id = p.farmer_id
+       ${where}
+       ORDER BY p.created_at DESC
+       LIMIT $${params.length - 1} OFFSET $${params.length}`,
+      params
+    );
+
+    // Count total
+    const countRes = await db.query(
+      `SELECT COUNT(*) FROM products p
+       JOIN users u ON u.id = p.farmer_id
+       ${where}`,
+      params.slice(0, -2)
+    );
+
+    return ok(res, {
+      products: result.rows,
+      total:    parseInt(countRes.rows[0].count),
+      page:     parseInt(page),
+      pages:    Math.ceil(parseInt(countRes.rows[0].count) / limit),
+    });
+  } catch (error) {
+    console.error('[getAllProducts]', error.message);
+    return err(res, 'Could not load products.', 500);
+  }
+};
+
+// ── ADMIN: SET PRODUCT STATUS ─────────────────────────────────
+const setProductStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status, reason } = req.body;
+
+    const allowed = ['active', 'suspended', 'deleted'];
+    if (!allowed.includes(status))
+      return err(res, `Invalid status. Must be: ${allowed.join(', ')}.`, 400);
+
+    const result = await db.query(
+      `UPDATE products
+       SET status = $1, updated_at = NOW()
+       WHERE id = $2
+       RETURNING id, name, status, farmer_id`,
+      [status, id]
+    );
+
+    if (!result.rows.length)
+      return err(res, 'Product not found.', 404);
+
+    const product = result.rows[0];
+
+    // Notify farmer by SMS if product suspended or deleted
+    if (['suspended', 'deleted'].includes(status)) {
+      const farmerRes = await db.query(
+        'SELECT phone, first_name FROM users WHERE id = $1',
+        [product.farmer_id]
+      );
+      if (farmerRes.rows.length) {
+        const msg = status === 'suspended'
+          ? `FarmDirect: Your product "${product.name}" has been temporarily suspended. Reason: ${reason || 'Policy violation'}. Contact support to reinstate.`
+          : `FarmDirect: Your product "${product.name}" has been removed from the marketplace. Reason: ${reason || 'Does not meet listing standards'}.`;
+        await sendSMS(farmerRes.rows[0].phone, msg).catch(() => {});
+      }
+    }
+
+    const labels = { active:'reactivated', suspended:'suspended', deleted:'removed' };
+    return ok(res, { id, status }, `Product ${labels[status]} successfully.`);
+  } catch (error) {
+    console.error('[setProductStatus]', error.message);
+    return err(res, 'Could not update product status.', 500);
+  }
+};
+
 module.exports = {
   getUsers,
   getUserById,
@@ -464,4 +567,6 @@ module.exports = {
   getStats,
   getAnalytics,
   getPublicStats,
+  getAllProducts,
+  setProductStatus,
 };

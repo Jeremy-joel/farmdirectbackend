@@ -7,7 +7,7 @@ const {
   setUserStatus, getOrders, getStats,
   getPublicStats, getAnalytics,
   getAllPayments, getAllCourierJobs,
-  deleteUser
+  deleteUser, getAllProducts, setProductStatus
 } = require('../controllers/admin.controller');
 
 // Unprotected public endpoint
@@ -27,5 +27,9 @@ router.delete('/users/:id',         deleteUser);
 router.get('/orders',              getOrders);
 router.get('/payments',            getAllPayments);
 router.get('/courier-jobs',        getAllCourierJobs);
+
+// Product moderation routes
+router.get('/products',              getAllProducts);
+router.patch('/products/:id/status', setProductStatus);
 
 module.exports = router;
